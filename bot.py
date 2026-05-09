@@ -112,14 +112,9 @@ async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.info("Image sent successfully to user %s", update.effective_user.id)
 
     except Exception as e:
-        logger.error("Failed to generate image: %s", e)
-        await update.message.reply_text(
-            "❌ Sorry, I could not generate the image.\n\n"
-            "Please try:\n"
-            "• Rephrasing your prompt\n"
-            "• Keeping it shorter and clearer\n"
-            "• Trying again in a moment"
-        )
+        logger.error("Failed to generate image: %s | type=%s", e, type(e).__name__)
+        # Show the real error so the user knows exactly what went wrong
+        await update.message.reply_text(f"❌ {e}")
 
     finally:
         # Always delete the "Generating…" message
