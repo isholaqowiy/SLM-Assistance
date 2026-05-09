@@ -56,10 +56,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Size options (add to end of prompt):*\n"
         "• `--landscape` → wide image (1536×1024)\n"
         "• `--square` → square image (1024×1024, default)\n\n"
-        "*Examples:*\n"
-        "• `A golden retriever on a beach`\n"
-        "• `Cyberpunk street market at night --landscape`\n\n"
-        "⚠️ Be descriptive for best results!",
+        "*Good prompt examples:*\n"
+        "• `A golden retriever running on a beach`\n"
+        "• `Cyberpunk street market at night --landscape`\n"
+        "• `A person in a football kit kicking a ball`\n"
+        "• `A cat sitting on a rooftop at sunset`\n\n"
+        "💡 *Prompt tips:*\n"
+        "• Describe scenes, not people by age\n"
+        "• Use _'person'_ instead of _'boy/girl/child'_\n"
+        "• Be descriptive — more detail = better image\n\n"
+        "⚠️ AI image services filter some words automatically.",
         parse_mode="Markdown",
     )
 
