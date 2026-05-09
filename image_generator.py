@@ -1,7 +1,8 @@
 """
 image_generator.py
-Handles image generation using the OpenAI API (gpt-image-1).
-Returns the path to a temporary PNG file.
+Handles image generation using the OpenAI API.
+Primary model: gpt-image-1
+Fallback model: dall-e-3 (more widely available)
 """
 
 import asyncio
@@ -15,85 +16,121 @@ import openai
 
 logger = logging.getLogger(__name__)
 
-# Read the OpenAI API key from environment
+# ── Read API key ──────────────────────────────────────────────────────────────
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY environment variable is missing!")
 
-# Create the OpenAI client once (reused for all requests)
+# Singleton OpenAI client
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 
 async def generate_image(prompt: str, size: str = "1024x1024") -> str:
     """
-    Generate an image from a text prompt using OpenAI's gpt-image-1 model.
+    Generate an image from a text prompt.
+    Tries gpt-image-1 first, falls back to dall-e-3 if unavailable.
 
-    Parameters
-    ----------
-    prompt : str  — what to generate
-    size   : str  — '1024x1024' or '1536x1024'
-
-    Returns
-    -------
-    str — path to a temporary PNG file (caller must delete it)
-
-    Raises
-    ------
-    Exception — if generation fails (caller handles this)
+    Returns path to a temporary PNG file (caller must delete it).
+    Raises Exception with a clear message if both models fail.
     """
-
-    # Run the blocking OpenAI call in a thread so the async bot stays responsive
     image_path = await asyncio.to_thread(_call_openai, prompt, size)
     return image_path
 
 
 def _call_openai(prompt: str, size: str) -> str:
     """
-    Synchronous OpenAI API call — runs in a background thread via asyncio.to_thread.
-    Returns path to temp PNG file.
+    Synchronous OpenAI call — runs in a background thread.
+    Tries gpt-image-1 then falls back to dall-e-3.
     """
-    logger.info("Calling OpenAI API | model=gpt-image-1 | size=%s", size)
 
-    try:
-        response = client.images.generate(
-            model="gpt-image-1",
-            prompt=prompt,
-            n=1,
-            size=size,                 # type: ignore[arg-type]
-            response_format="b64_json",
-        )
-    except openai.BadRequestError as e:
-        logger.warning("OpenAI rejected prompt: %s", e)
-        raise Exception(
-            "Your prompt was rejected by the content policy. "
-            "Please try a different description."
-        ) from e
-    except openai.RateLimitError as e:
-        logger.warning("OpenAI rate limit: %s", e)
-        raise Exception("The image service is busy right now. Please try again in a moment.") from e
-    except openai.AuthenticationError as e:
-        logger.error("OpenAI auth failed: %s", e)
-        raise Exception("API key error. Please contact the bot admin.") from e
-    except openai.APIConnectionError as e:
-        logger.error("OpenAI connection error: %s", e)
-        raise Exception("Could not connect to the image service. Please try again.") from e
-    except Exception as e:
-        logger.error("Unexpected OpenAI error: %s", e)
-        raise Exception("Image generation failed. Please try again.") from e
+    # dall-e-3 only supports 1024x1024, 1792x1024, 1024x1792
+    # Map our size to dall-e-3 compatible size for fallback
+    dalle3_size = "1792x1024" if size == "1536x1024" else "1024x1024"
 
-    # Decode the base64 image data
-    try:
-        b64_data = response.data[0].b64_json
-        image_bytes = base64.b64decode(b64_data)
-    except Exception as e:
-        logger.error("Failed to decode image response: %s", e)
-        raise Exception("Received an invalid response from the image service.") from e
+    # Try gpt-image-1 first, then dall-e-3
+    models_to_try = [
+        ("gpt-image-1", size,        "b64_json"),
+        ("dall-e-3",    dalle3_size,  "b64_json"),
+    ]
 
-    # Save to a temp file — caller is responsible for deleting it
-    tmp_path = os.path.join(tempfile.gettempdir(), f"slmas_{uuid.uuid4().hex}.png")
-    with open(tmp_path, "wb") as f:
-        f.write(image_bytes)
+    last_error = None
 
-    logger.info("Image saved to %s (%d bytes)", tmp_path, len(image_bytes))
-    return tmp_path
+    for model, img_size, fmt in models_to_try:
+        try:
+            logger.info("Trying model=%s size=%s", model, img_size)
+
+            response = client.images.generate(
+                model=model,
+                prompt=prompt,
+                n=1,
+                size=img_size,          # type: ignore[arg-type]
+                response_format=fmt,    # type: ignore[arg-type]
+            )
+
+            # Decode the base64 image
+            b64_data = response.data[0].b64_json
+            image_bytes = base64.b64decode(b64_data)
+
+            # Save to temp file
+            tmp_path = os.path.join(
+                tempfile.gettempdir(), f"slmas_{uuid.uuid4().hex}.png"
+            )
+            with open(tmp_path, "wb") as f:
+                f.write(image_bytes)
+
+            logger.info("✅ Image generated with %s → %s (%d bytes)", model, tmp_path, len(image_bytes))
+            return tmp_path
+
+        except openai.BadRequestError as e:
+            # Content policy violation — no point retrying other models
+            logger.warning("Content policy rejection (%s): %s", model, e)
+            raise Exception(
+                "⛔ Your prompt was rejected by OpenAI's content policy.\n"
+                "Please rephrase it and try again."
+            ) from e
+
+        except openai.AuthenticationError as e:
+            logger.error("Auth error (%s): %s", model, e)
+            raise Exception(
+                "🔑 Invalid OpenAI API key.\n"
+                "Please check your OPENAI_API_KEY in Render's Environment settings."
+            ) from e
+
+        except openai.RateLimitError as e:
+            logger.warning("Rate limit (%s): %s", model, e)
+            raise Exception(
+                "⏳ OpenAI rate limit reached. Please wait a moment and try again."
+            ) from e
+
+        except openai.PermissionDeniedError as e:
+            # gpt-image-1 not available on this account → try next model
+            logger.warning("Permission denied for %s (will try fallback): %s", model, e)
+            last_error = e
+            continue
+
+        except openai.NotFoundError as e:
+            # Model not found → try next model
+            logger.warning("Model not found %s (will try fallback): %s", model, e)
+            last_error = e
+            continue
+
+        except openai.APIConnectionError as e:
+            logger.error("Connection error (%s): %s", model, e)
+            raise Exception(
+                "🌐 Could not connect to OpenAI. Please try again in a moment."
+            ) from e
+
+        except Exception as e:
+            # Log the full real error so it appears in Render logs
+            logger.error("Unexpected error with model %s: %s | type=%s", model, e, type(e).__name__)
+            last_error = e
+            continue
+
+    # All models failed
+    logger.error("All models failed. Last error: %s", last_error)
+    raise Exception(
+        f"❌ Image generation failed with all available models.\n"
+        f"Last error: {type(last_error).__name__}: {last_error}\n\n"
+        "Check Render logs for details, or verify your OPENAI_API_KEY has image generation access."
+    )
